@@ -13,7 +13,6 @@ http://SERVER_IP:51821
 ### Login
 
 Username: no user, just use password
-Password: `WG_EASY_ADMIN_PASSWORD`
 
 ### Add Client
 
