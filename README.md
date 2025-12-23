@@ -1,7 +1,5 @@
 # WireGuard VPN Server
 
-Some third party API providers working with whitelisted IP, even in dev environment. To access their servers we need static IP. This VPN server provides a static IP. We are using this VPN server is a proxy server. Then we can use dev APIs in our local environment.
-
 A simple [WireGuard](https://www.wireguard.com/) VPN server using [wg-easy](https://github.com/wg-easy/wg-easy).
 
 > [!NOTE]  
