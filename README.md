@@ -4,6 +4,9 @@ Some third party API providers working with whitelisted IP, even in dev environm
 
 A simple [WireGuard](https://www.wireguard.com/) VPN server using [wg-easy](https://github.com/wg-easy/wg-easy).
 
+> [!NOTE]  
+> If you are looking for Amnezia version, check [Amnezia WireGuard VPN Server](https://github.com/relliv/amnezia-wireguard-vpn-server-installer) repository.
+
 ## 🌐 Access Web UI
 
 ```txt
