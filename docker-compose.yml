@@ -1,17 +1,24 @@
 services:
-  my_wireguard:      
-    image: ghcr.io/wg-easy/wg-easy:latest
+  my_wireguard:
+    image: ghcr.io/wg-easy/wg-easy:${WG_EASY_VERSION:-15}
     container_name: my_wireguard
+    networks:
+      wg:
+        ipv4_address: 10.42.42.42
+        ipv6_address: fdcc:ad94:bacf:61a3::2a
     volumes:
       - my_wireguard_vol:/etc/wireguard
       - /lib/modules:/lib/modules:ro
     environment:
-      - WG_HOST=${SERVER_IP}
-      - PASSWORD_HASH=${PASSWORD_HASH}
-      - WG_PORT=51820
-      - WG_DEFAULT_ADDRESS=10.8.0.x
-      - WG_DEFAULT_DNS=1.1.1.1
-      - WG_MTU=1420
+      # Web UI is served over plain http on SERVER_IP:51821
+      - INSECURE=${INSECURE:-true}
+      # Unattended setup, only read on the first start
+      - INIT_ENABLED=${INIT_ENABLED:-false}
+      - INIT_USERNAME=${ADMIN_USERNAME:-}
+      - INIT_PASSWORD=${ADMIN_PASSWORD:-}
+      - INIT_HOST=${SERVER_IP:-}
+      - INIT_PORT=51820
+      - INIT_DNS=1.1.1.1,1.0.0.1
     ports:
       - "51820:51820/udp"
       - "51821:51821/tcp"
@@ -26,6 +33,16 @@ services:
       - net.ipv6.conf.all.disable_ipv6=0
       - net.ipv6.conf.all.forwarding=1
       - net.ipv6.conf.default.forwarding=1
+
+networks:
+  wg:
+    driver: bridge
+    enable_ipv6: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.42.42.0/24
+        - subnet: fdcc:ad94:bacf:61a3::/64
 
 volumes:
   my_wireguard_vol:

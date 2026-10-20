@@ -62,6 +62,12 @@ check_requirements() {
     fi
     print_success "Docker daemon is running"
 
+    if ! command_exists curl; then
+        print_error "curl is not installed. Please install curl."
+        exit 1
+    fi
+    print_success "curl is installed"
+
     echo ""
 }
 
@@ -91,8 +97,14 @@ get_server_ip() {
     echo ""
 }
 
-# Get password
-get_password() {
+# Get admin credentials
+get_credentials() {
+    printf "${BLUE}Enter a username for the admin panel${NC}\n"
+    read -p "  Username [admin]: " ADMIN_USERNAME
+    ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+    print_success "Username: $ADMIN_USERNAME"
+    echo ""
+
     printf "${BLUE}Enter a password for the admin panel${NC}\n"
     while true; do
         read -s -p "  Password: " PASSWORD
@@ -102,6 +114,16 @@ get_password() {
 
         if [ -z "$PASSWORD" ]; then
             print_error "Password cannot be empty"
+            continue
+        fi
+
+        if [ ${#PASSWORD} -lt 12 ]; then
+            print_error "Password must be at least 12 characters"
+            continue
+        fi
+
+        if [[ "$PASSWORD" == *"'"* ]]; then
+            print_error "Password cannot contain single quotes"
             continue
         fi
 
@@ -116,73 +138,83 @@ get_password() {
     echo ""
 }
 
+# Check for an existing installation
+check_existing_install() {
+    if docker volume inspect my_wireguard_data >/dev/null 2>&1; then
+        print_warning "Existing data volume 'my_wireguard_data' found."
+        print_warning "Unattended setup only runs on a fresh volume, so your existing config will be kept."
+        print_warning "Data from wg-easy v14 is not migrated automatically, see README for migration steps."
+        read -p "  Continue? [y/N]: " CONTINUE
+        if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+        echo ""
+    fi
+}
+
 # Create .env file
 create_env_file() {
     print_info "Creating .env file..."
 
+    umask 077
     cat > .env << EOF
 # Docker Compose
 COMPOSE_PROJECT_NAME=my_vpn
 
+# wg-easy image tag (major version pin)
+WG_EASY_VERSION=15
+
 # Wireguard
 SERVER_IP=$SERVER_IP
-PASSWORD_HASH=placeholder
+
+# Allow the web UI over plain http (set false behind an https reverse proxy)
+INSECURE=true
+
+# Unattended setup, only read on the first start
+INIT_ENABLED=true
+ADMIN_USERNAME='$ADMIN_USERNAME'
+ADMIN_PASSWORD='$PASSWORD'
 EOF
 
     print_success ".env file created"
 }
 
-# Generate password hash
-generate_password_hash() {
-    print_info "Generating password hash..."
-
-    # Start container temporarily to generate hash
-    docker compose up -d >/dev/null 2>&1
-
-    # Wait for container to be ready
-    sleep 3
-
-    # Generate hash - wgpw outputs "PASSWORD_HASH='$2a$...'" so we extract just the hash value
-    local raw_output=$(docker exec my_wireguard wgpw "$PASSWORD" 2>/dev/null | tail -1)
-
-    # Extract only the hash value (remove PASSWORD_HASH= prefix if present)
-    PASSWORD_HASH=$(echo "$raw_output" | sed "s/^PASSWORD_HASH=//")
-
-    if [ -z "$PASSWORD_HASH" ]; then
-        print_error "Failed to generate password hash"
-        docker compose down >/dev/null 2>&1
-        exit 1
-    fi
-
-    print_success "Password hash generated"
-
-    # Stop container
-    docker compose stop >/dev/null 2>&1
-}
-
-# Update .env with password hash
-update_env_with_hash() {
-    print_info "Updating .env with password hash..."
-
-    # Escape special characters for sed
-    ESCAPED_HASH=$(echo "$PASSWORD_HASH" | sed 's/[&/\]/\\&/g')
-
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' "s|PASSWORD_HASH=placeholder|PASSWORD_HASH=$ESCAPED_HASH|g" .env
-    else
-        # Linux
-        sed -i "s|PASSWORD_HASH=placeholder|PASSWORD_HASH=$ESCAPED_HASH|g" .env
-    fi
-
-    print_success ".env updated with password hash"
-}
-
 # Start the server
 start_server() {
-    print_info "Starting WireGuard VPN server..."
+    print_info "Pulling image and starting WireGuard VPN server..."
+    docker compose pull
     docker compose up -d
     print_success "Server started"
+}
+
+# Wait until the web UI responds
+wait_for_server() {
+    print_info "Waiting for the web UI to come up..."
+    for _ in $(seq 1 30); do
+        if curl -s -o /dev/null --connect-timeout 2 "http://127.0.0.1:51821"; then
+            print_success "Web UI is up"
+            return 0
+        fi
+        sleep 2
+    done
+    print_error "Web UI did not respond in 60s. Check: docker compose logs"
+    exit 1
+}
+
+# Remove the plain text password from .env once setup is done
+scrub_env() {
+    print_info "Removing admin password from .env..."
+    local tmp
+    tmp=$(mktemp)
+    sed -e "s/^INIT_ENABLED=.*/INIT_ENABLED=false/" \
+        -e "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=/" .env > "$tmp"
+    cat "$tmp" > .env
+    rm -f "$tmp"
+
+    # Recreate the container so the password is gone from its environment too
+    docker compose up -d >/dev/null 2>&1
+    print_success "Password removed from .env and container environment"
+    wait_for_server
 }
 
 # Print completion message
@@ -193,12 +225,12 @@ print_completion() {
     printf "${GREEN}╚════════════════════════════════════════════╝${NC}\n"
     echo ""
     printf "  ${BLUE}Admin Panel:${NC} http://%s:51821\n" "$SERVER_IP"
-    printf "  ${BLUE}Login:${NC} Use the password you just set\n"
+    printf "  ${BLUE}Login:${NC} %s / the password you just set\n" "$ADMIN_USERNAME"
     echo ""
     printf "  ${YELLOW}Next steps:${NC}\n"
     echo "  1. Open the admin panel in your browser"
     echo "  2. Login with your password"
-    echo "  3. Click '+ New' to add a client"
+    echo "  3. Click '+ New Client' to add a client"
     echo "  4. Scan QR code or download config file"
     echo "  5. Install WireGuard client app: https://www.wireguard.com/install/"
     echo ""
@@ -216,12 +248,13 @@ print_completion() {
 main() {
     print_banner
     check_requirements
+    check_existing_install
     get_server_ip
-    get_password
+    get_credentials
     create_env_file
-    generate_password_hash
-    update_env_with_hash
     start_server
+    wait_for_server
+    scrub_env
     print_completion
 }
 
